@@ -88,6 +88,12 @@ body{font-family:var(--mono);color:#EAF6FA;-webkit-user-select:none;user-select:
 .entry div b{font-size:15px;letter-spacing:.1em;color:var(--deepice)}
 .entrynote{margin-top:12px;font-size:9px;letter-spacing:.18em;color:#6E8B9A}
 
+/* 소리 켜기/끄기 — 오른쪽 아래 구석, 판을 가리지 않게 작게 */
+.sound{position:absolute;right:14px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:5;
+  pointer-events:auto;font-family:var(--mono);font-size:9px;letter-spacing:.26em;color:#BFE6F2;
+  background:rgba(10,38,52,.55);border:1px solid rgba(190,238,250,.3);padding:8px 10px;cursor:pointer}
+.sound.off{color:#6E8B9A;border-color:rgba(190,238,250,.14)}
+
 </style>
 </head>
 <body>
@@ -107,6 +113,7 @@ body{font-family:var(--mono);color:#EAF6FA;-webkit-user-select:none;user-select:
       <div class="track"><i data-bar></i></div>
     </div>
     <div class="flash" data-flash></div>
+    <button type="button" class="sound" data-sound>SOUND ON</button>
     <div class="screen" data-title>
       <div class="kicker">MLB WHITE CHRISTMAS</div>
       <h1>FROST<br>LINK</h1>
@@ -152,7 +159,7 @@ const CFG = {
   COLS: 7,
   ROWS: 8,
   TYPES: 6,              // 한 판에 나오는 비니 종류. 색 그룹마다 하나씩 뽑는다
-  ROUND_TIME: 50,        // 시작 시간 (초). 단계를 깰 때마다 늘어난다
+  ROUND_TIME: 60,        // 시작 시간 (초). 단계를 깰 때마다 늘어난다
 
   SCORE_TILE: 60,        // 결정 하나당 기본 점수
   CASCADE_MUL: 0.5,      // 연쇄 한 번마다 배수에 더해지는 양 (1.0, 1.5, 2.0 …)
@@ -164,6 +171,7 @@ const CFG = {
 
   ICE_CHANCE: 0.10,      // 리필될 때 얼음에 갇힌 칸이 나올 확률
   ICE_FROM_STAGE: 2,     // 이 단계부터 얼음 칸이 나온다
+  ICE_MISSION: 0.18,     // 미션이 얼음 깨기일 때 최소 등장 비율
   ICE_DOUBLE: 0.30,      // 그중 두 겹짜리 비율
   ICE_SCORE: 150,        // 얼음 한 겹 깰 때
 
@@ -174,6 +182,7 @@ const CFG = {
   FIRE_BASE: 0.07,       // 그때의 비율
   FIRE_STEP: 0.035,      // 단계마다 늘어나는 비율
   FIRE_MAX: 0.24,
+  FIRE_MISSION: 0.16,    // 미션이 불 끄기일 때 최소 등장 비율
   FIRE_BOARD_CAP: 0.28,  // 판에 이 비율 넘게 불이 붙어 있으면 새 불은 안 나온다.
                          // 불은 두 번 맞춰야 없어져서 그냥 두면 계속 쌓인다
 
@@ -200,7 +209,7 @@ const CFG = {
   FALL_ACCEL: 78,        // 떨어지는 가속 (타일/초^2)
   FALL_MAX: 48,          // 떨어지는 최고 속도 (타일/초)
 
-  TIME_PER_TILE: 0.065,  // 하나 없앨 때마다 늘어나는 시간 (초). 잘하면 오래 산다
+  TIME_PER_TILE: 0.085,  // 하나 없앨 때마다 늘어나는 시간 (초). 잘하면 오래 산다
   TIME_CAP: 70,          // 시간 상한
   TIME_TAPER: 0.07,      // 단계마다 시간 보너스가 줄어드는 비율
   TIME_TAPER_MIN: 0.3,   // 아무리 줄어도 이 비율은 남는다
@@ -271,12 +280,14 @@ const ZONES = [
   { id: 'palace',  name: 'ICE PALACE',   line: 'ZERO IS ONE BLOCK AWAY.' },
 ];
 
+// 목표치는 낮게 시작한다. 한 단계가 20~30초 안에 끝나야 "다음"이 보인다.
+// 처음엔 type 14 / douse 6 으로 뒀다가 완벽 플레이가 2단계에서 끝나서 낮췄다.
 const MISSIONS = [
-  { kind: 'type',    base: 14, step: 4,  verb: 'FREEZE' },
-  { kind: 'douse',   base: 6,  step: 2,  verb: 'PUT OUT' },
-  { kind: 'special', base: 3,  step: 1,  verb: 'MAKE' },
-  { kind: 'score',   base: 9000, step: 3500, verb: 'SCORE' },
-  { kind: 'ice',     base: 12, step: 4,  verb: 'BREAK' },
+  { kind: 'type',    base: 8,    step: 3,    verb: 'FREEZE' },
+  { kind: 'douse',   base: 4,    step: 2,    verb: 'PUT OUT' },
+  { kind: 'special', base: 2,    step: 1,    verb: 'MAKE' },
+  { kind: 'score',   base: 4000, step: 2500, verb: 'SCORE' },
+  { kind: 'ice',     base: 8,    step: 3,    verb: 'BREAK' },
 ];
 
 // 단계 → 구역·미션. 한 바퀴 돌 때마다 목표가 커진다.
@@ -611,7 +622,10 @@ function heatRise(g) {
 }
 
 function fireChance(g) {
-  if (g.stage < CFG.FIRE_FROM_STAGE) return 0;
+  // 미션이 "불 끄기"면 그 단계에 불이 반드시 나와야 한다.
+  // 안 그러면 깰 수 없는 미션이 되어 그 단계에서 영영 멈춘다.
+  const needed = g.mission && g.mission.kind === 'douse';
+  if (!needed && g.stage < CFG.FIRE_FROM_STAGE) return 0;
   // 이미 판이 불바다면 더 붙이지 않는다 — 두 번 맞춰야 없어지므로 쌓이기만 한다
   let burning = 0;
   let total = 0;
@@ -619,7 +633,15 @@ function fireChance(g) {
     for (const t of row) { if (!t) continue; total++; if (t.fire > 0) burning++; }
   }
   if (total > 0 && burning / total >= CFG.FIRE_BOARD_CAP) return 0;
-  return Math.min(CFG.FIRE_MAX, CFG.FIRE_BASE + (g.stage - CFG.FIRE_FROM_STAGE) * CFG.FIRE_STEP);
+  const byStage = CFG.FIRE_BASE + (g.stage - CFG.FIRE_FROM_STAGE) * CFG.FIRE_STEP;
+  return Math.min(CFG.FIRE_MAX, needed ? Math.max(CFG.FIRE_MISSION, byStage) : byStage);
+}
+
+// 미션이 "얼음 깨기"면 그 단계에 얼음이 반드시 나와야 한다
+function iceChance(g) {
+  const needed = g.mission && g.mission.kind === 'ice';
+  if (!needed && g.stage < CFG.ICE_FROM_STAGE) return 0;
+  return needed ? Math.max(CFG.ICE_MISSION, CFG.ICE_CHANCE) : CFG.ICE_CHANCE;
 }
 
 function selectable(g) {
@@ -964,7 +986,7 @@ function update(g, dt) {
     for (const cell of g.clearing) g.grid[cell.r][cell.c] = null;
     g.clearing = [];
     collapse(g.grid, CFG.TYPES, g.rng, fireChance(g), CFG.SNOW_CHANCE,
-             g.stage >= CFG.ICE_FROM_STAGE ? CFG.ICE_CHANCE : 0, CFG.ICE_DOUBLE);
+             iceChance(g), CFG.ICE_DOUBLE);
     // 새 특수 아이템을 내려앉은 판 위에 얹는다
     for (const p of g.pending) {
       const t = g.grid[p.r][p.c];
@@ -1023,7 +1045,7 @@ function update(g, dt) {
   if (g.left <= 0 && g.phase === 'idle') g.over = true;
 }
 
-  Object.assign(__exports, { createGame, fireChance, heatRise, selectable, stageGoal, teamOf, timePerTile, trySwap, typeMul, update });
+  Object.assign(__exports, { createGame, fireChance, heatRise, iceChance, selectable, stageGoal, teamOf, timePerTile, trySwap, typeMul, update });
 
   };
   __defs['view.js'] = function (__exports, __req) {
@@ -1893,11 +1915,422 @@ function createView(canvas, img) {
   Object.assign(__exports, { assetList, createView });
 
   };
+  __defs['sfx.js'] = function (__exports, __req) {
+// 왁스 뿌시기(왁뿌) ASMR 효과음 — 전부 코드로 합성한다.
+// 녹음 파일 0개: 음원 라이선스 걱정이 없고 단일 파일 용량도 안 늘어난다.
+//
+// 왁뿌 소리의 정체 = 아주 짧은(2~9ms) 고음 잡음 알갱이 수십 개가 몰려서 터지는 것.
+// 알갱이의 높이·간격·개수를 바꿔 재질을 만든다:
+//   snap    딱딱한 껍질이 "딱" 갈라짐          crunch  씹히듯 "바사삭"
+//   crumble 잘게 부서지며 "사르르"            pop     왁스 구슬 "톡"
+//   shatter 얼음·유리처럼 "챙그랑"            heavy   큰 덩어리 "콰직"
+// 소리는 처음 한 번 버퍼로 구워 두고, 재생은 버퍼 하나 = 노드 몇 개라 폰에서도 가볍다.
+const { CFG } = __req('config.js');
+const VARIANTS = 6;
+const MAX_VOICES = 32;       // 한꺼번에 울리는 소리 상한 (넘치면 버린다)
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+
+let ctx = null;
+let master = null;
+let bank = null;
+let voices = 0;
+let on = true;
+const tally = {};        // 무엇이 몇 번 울렸나 (검증용)
+try { on = localStorage.getItem('frostlink_sound') !== 'off'; } catch { on = true; }
+
+// ── 합성 재료 ──────────────────────────────────────────
+
+// 대역 잡음 알갱이 하나 — 왁스가 한 번 "틱" 갈라지는 소리
+function grain(out, SR, t0, f, Q, dur, amp) {
+  const n0 = Math.floor(t0 * SR);
+  const n = Math.max(8, Math.floor(dur * SR));
+  const w = 2 * Math.PI * Math.min(f, SR * 0.45) / SR;
+  const al = Math.sin(w) / (2 * Q);
+  const a0 = 1 + al;
+  const b0 = al / a0, b2 = -al / a0, a1 = (-2 * Math.cos(w)) / a0, a2 = (1 - al) / a0;
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  const atk = Math.max(1, Math.floor(0.0003 * SR));
+  for (let i = 0; i < n && n0 + i < out.length; i++) {
+    const x = Math.random() * 2 - 1;
+    const y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x; y2 = y1; y1 = y;
+    const env = i < atk ? i / atk : Math.exp(-5 * (i - atk) / n);
+    out[n0 + i] += y * env * amp;
+  }
+}
+
+// 음높이가 미끄러지는 사인 — 몸통의 "톡"·"쿵"
+function tone(out, SR, t0, f0, f1, dur, amp) {
+  const n0 = Math.floor(t0 * SR);
+  const n = Math.floor(dur * SR);
+  let ph = 0;
+  for (let i = 0; i < n && n0 + i < out.length; i++) {
+    const k = i / n;
+    const f = f0 * Math.pow(f1 / f0, Math.min(1, k * 3));
+    ph += (2 * Math.PI * f) / SR;
+    const env = Math.min(1, i / (0.0008 * SR)) * Math.exp(-6 * k);
+    out[n0 + i] += Math.sin(ph) * env * amp;
+  }
+}
+
+// 순간 충격 — 첫 "딱"
+function click(out, SR, t0, amp) {
+  const n0 = Math.floor(t0 * SR);
+  const seq = [1, -0.75, 0.5, -0.3, 0.15];
+  for (let i = 0; i < seq.length && n0 + i < out.length; i++) out[n0 + i] += seq[i] * amp;
+}
+
+// 중심이 움직이는 잡음 — 휙(whoosh)·치익(hiss)
+function sweep(out, SR, t0, dur, fa, fb, Q, amp, shape) {
+  const n0 = Math.floor(t0 * SR);
+  const n = Math.floor(dur * SR);
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0, b0 = 0, b2 = 0, a1 = 0, a2 = 0;
+  for (let i = 0; i < n && n0 + i < out.length; i++) {
+    const k = i / n;
+    if ((i & 31) === 0) {
+      const f = fa * Math.pow(fb / fa, k);
+      const w = 2 * Math.PI * Math.min(f, SR * 0.45) / SR;
+      const al = Math.sin(w) / (2 * Q);
+      const a0 = 1 + al;
+      b0 = al / a0; b2 = -al / a0; a1 = (-2 * Math.cos(w)) / a0; a2 = (1 - al) / a0;
+    }
+    const x = Math.random() * 2 - 1;
+    const y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x; y2 = y1; y1 = y;
+    const env = shape === 'rise' ? Math.pow(k, 1.6) * (1 - Math.pow(k, 8))
+      : Math.sin(Math.PI * Math.min(1, k * 1.15)) * (1 - k);
+    out[n0 + i] += y * env * amp;
+  }
+}
+
+// 알갱이 무리 — 시작에 몰리고 뒤로 갈수록 성기게 (왁뿌 특유의 "바사사삭")
+function crackles(out, SR, t0, count, spread, fLo, fHi, amp) {
+  for (let i = 0; i < count; i++) {
+    const t = Math.min(spread, -Math.log(1 - Math.random() * 0.98) * spread * 0.3);
+    grain(out, SR, t0 + t, rand(fLo, fHi), rand(1.5, 5), rand(0.002, 0.009),
+          amp * rand(0.25, 1) * Math.exp(-t / (spread * 0.6)));
+  }
+}
+
+const RECIPES = {
+  snap: { dur: 0.14, fn(o, SR) {
+    click(o, SR, 0, 1);
+    grain(o, SR, 0, rand(3500, 6500), 1.2, 0.004, 1.1);
+    crackles(o, SR, 0.002, (rand(6, 13)) | 0, 0.05, 4500, 10000, 0.6);
+    tone(o, SR, 0.001, rand(1700, 2900), rand(1400, 2400), 0.035, 0.22);
+  } },
+  crunch: { dur: 0.28, fn(o, SR) {
+    tone(o, SR, 0, rand(140, 190), 65, 0.06, 0.7);
+    click(o, SR, 0, 0.6);
+    crackles(o, SR, 0, (rand(28, 46)) | 0, 0.2, 1200, 4200, 0.9);
+  } },
+  crumble: { dur: 0.46, fn(o, SR) {
+    const clusters = (rand(4, 7)) | 0;
+    for (let c = 0; c < clusters; c++) {
+      const t = (c / clusters) * 0.34 + rand(0, 0.03);
+      crackles(o, SR, t, (rand(6, 13)) | 0, 0.018, 450, 1900, 0.8 * Math.exp(-c * 0.35));
+    }
+  } },
+  pop: { dur: 0.17, fn(o, SR) {
+    click(o, SR, 0, 0.8);
+    tone(o, SR, 0, rand(700, 1100), rand(200, 320), 0.05, 1.2);
+    for (let i = 0; i < (rand(4, 8) | 0); i++) {
+      grain(o, SR, rand(0.02, 0.13), rand(2000, 5000), 3, rand(0.002, 0.005), rand(0.08, 0.22));
+    }
+  } },
+  shatter: { dur: 0.42, fn(o, SR) {
+    click(o, SR, 0, 0.9);
+    for (let i = 0; i < 5; i++) {
+      const f = rand(2400, 7200);
+      tone(o, SR, rand(0, 0.01), f, f * rand(0.97, 1), rand(0.12, 0.3), rand(0.1, 0.22));
+    }
+    crackles(o, SR, 0, 26, 0.08, 4000, 9500, 0.8);
+  } },
+  heavy: { dur: 0.6, fn(o, SR) {
+    tone(o, SR, 0, rand(100, 130), 38, 0.2, 1);
+    grain(o, SR, 0, 320, 0.7, 0.07, 1.4);
+    click(o, SR, 0, 1);
+    crackles(o, SR, 0.003, 75, 0.42, 800, 7200, 0.85);
+  } },
+  hiss: { dur: 0.38, fn(o, SR) {
+    sweep(o, SR, 0, 0.36, 6500, 2600, 0.9, 0.6, 'bell');
+    crackles(o, SR, 0.01, 10, 0.2, 2500, 7000, 0.5);
+  } },
+  whoosh: { dur: 0.42, fn(o, SR) { sweep(o, SR, 0, 0.4, 500, 4200, 1.3, 0.9, 'rise'); } },
+  rumble: { dur: 0.95, fn(o, SR) {
+    tone(o, SR, 0, 75, 38, 0.9, 1);
+    for (let i = 0; i < 40; i++) grain(o, SR, rand(0, 0.7), rand(70, 260), 0.8, rand(0.03, 0.09), rand(0.3, 0.8));
+    crackles(o, SR, 0.05, 30, 0.8, 2000, 6000, 0.35);
+  } },
+  tick: { dur: 0.05, fn(o, SR) {
+    grain(o, SR, 0, rand(2600, 3600), 3, 0.006, 0.7);
+    tone(o, SR, 0, 1500, 1200, 0.02, 0.25);
+  } },
+  thud: { dur: 0.12, fn(o, SR) {
+    tone(o, SR, 0, 230, 140, 0.07, 0.9);
+    grain(o, SR, 0, 800, 1, 0.02, 0.4);
+  } },
+  // 얼음 종 — 연쇄·단계 음계용. 재생 속도로 음을 바꾼다
+  bell: { dur: 0.9, fn(o, SR) {
+    tone(o, SR, 0, 1320, 1320, 0.85, 0.55);
+    tone(o, SR, 0, 1320 * 2.76, 1320 * 2.76, 0.4, 0.18);
+    tone(o, SR, 0, 1320 * 5.4, 1320 * 5.4, 0.18, 0.08);
+  } },
+};
+// 음정이 필요한 것은 변형을 적게
+const FEW = new Set(['tick', 'thud', 'bell', 'whoosh', 'rumble']);
+
+function bake() {
+  const SR = ctx.sampleRate;
+  const out = {};
+  for (const [name, r] of Object.entries(RECIPES)) {
+    out[name] = [];
+    const count = FEW.has(name) ? 2 : VARIANTS;
+    for (let v = 0; v < count; v++) {
+      const data = new Float32Array(Math.ceil(r.dur * SR));
+      r.fn(data, SR);
+      let peak = 0;
+      for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+      const k = peak > 0 ? 0.9 / peak : 0;
+      // 끝을 살짝 페이드 — 버퍼가 잘리며 나는 "틱" 방지
+      const fade = Math.min(data.length, Math.floor(0.004 * SR));
+      for (let i = 0; i < data.length; i++) {
+        data[i] *= k;
+        const left = data.length - i;
+        if (left < fade) data[i] *= left / fade;
+      }
+      const buf = ctx.createBuffer(1, data.length, SR);
+      buf.getChannelData(0).set(data);
+      out[name].push(buf);
+    }
+  }
+  return out;
+}
+
+// ── 재생 ──────────────────────────────────────────────
+
+function play(name, { at = 0, rate = 1, pan = 0, gain = 1 } = {}) {
+  if (!on || !ctx || !bank || voices >= MAX_VOICES) return;
+  const src = ctx.createBufferSource();
+  src.buffer = pick(bank[name]);
+  src.playbackRate.value = rate;
+  const g = ctx.createGain();
+  g.gain.value = gain;
+  src.connect(g);
+  if (ctx.createStereoPanner) {
+    const p = ctx.createStereoPanner();
+    p.pan.value = Math.max(-1, Math.min(1, pan));
+    g.connect(p);
+    p.connect(master);
+  } else g.connect(master);
+  voices++;
+  tally[name] = (tally[name] || 0) + 1;
+  src.onended = () => { voices--; };
+  src.start(ctx.currentTime + at);
+}
+
+const panOf = (c) => ((c / Math.max(1, CFG.COLS - 1)) * 2 - 1) * 0.75;
+// 얼음 종 음계 (펜타토닉) — 연쇄가 이어질수록 한 칸씩 올라간다
+const SCALE = [1, 9 / 8, 5 / 4, 3 / 2, 5 / 3, 2, 9 / 4, 5 / 2, 3, 10 / 3];
+
+// 비니마다 주로 나는 소리가 다르다 — 같은 비니끼리 맞추면 같은 "결"이 난다
+const TYPE_MATS = [
+  ['crunch', 'snap'],
+  ['pop', 'crunch'],
+  ['crumble', 'pop'],
+  ['snap', 'crumble'],
+  ['crunch', 'pop'],
+];
+const ALL_MATS = ['snap', 'crunch', 'crumble', 'pop'];
+function matFor(type) {
+  const m = TYPE_MATS[type];
+  if (!m) return 'shatter';
+  const u = Math.random();
+  return u < 0.62 ? m[0] : u < 0.9 ? m[1] : pick(ALL_MATS);
+}
+
+// 좌우로 훑고 지나가는 연속 파열 — 가로줄·미야옹 러시
+function zipper(n, span, from, to, rate, gain = 0.8, t0 = 0) {
+  for (let i = 0; i < n; i++) {
+    const k = i / Math.max(1, n - 1);
+    play(i % 3 === 0 ? 'snap' : pick(['crunch', 'pop', 'snap']),
+         { at: t0 + k * span, pan: from + (to - from) * k, rate: rate * rand(0.95, 1.15) * (1 + k * 0.25), gain });
+  }
+}
+
+function bells(steps, gap, base = 1, gain = 0.3) {
+  steps.forEach((s, i) => play('bell', { at: i * gap, rate: base * SCALE[s % SCALE.length] * (s >= SCALE.length ? 2 : 1), gain }));
+}
+
+let chain = 1;
+
+function onEvents(events) {
+  if (!on || !bank) return;
+  for (const e of events) if (e.kind === 'cascade') chain = e.n;
+  const pitch = Math.min(1.6, 1 + (chain - 1) * 0.07);
+
+  for (const e of events) {
+    switch (e.kind) {
+      case 'cascade':
+        if (e.n >= 2) play('bell', { rate: SCALE[Math.min(e.n - 2, SCALE.length - 1)], gain: 0.28, at: 0.02 });
+        break;
+      case 'clear': {
+        const cells = e.cells.slice().sort(() => Math.random() - 0.5);
+        const n = Math.min(cells.length, 7);
+        for (let i = 0; i < n; i++) {
+          const cell = cells[i];
+          play(matFor(cell.type), { at: i * rand(0.01, 0.028), rate: pitch * rand(0.86, 1.18),
+                                    pan: panOf(cell.c), gain: n > 4 ? 0.62 : 0.85 });
+        }
+        if (cells.length >= 6) play('heavy', { rate: pitch * rand(0.9, 1.1), gain: 0.45 });
+        if (cells.length >= 12) play('crumble', { at: 0.09, gain: 0.7 });
+        chain = 1;
+        break;
+      }
+      case 'blast': {
+        const p = panOf(e.c);
+        if (e.special === 'bomb') {
+          play('heavy', { rate: 0.8, gain: 1, pan: p });
+          play('heavy', { at: 0.03, rate: 1.05, gain: 0.7, pan: -p });
+          play('shatter', { at: 0.02, rate: rand(0.9, 1.1), gain: 0.6 });
+          play('crumble', { at: 0.1, gain: 0.8 });
+        } else {
+          play('heavy', { rate: 1.1, gain: 0.65, pan: p });
+          zipper(8, 0.2, p, p < 0 ? 1 : -1, 1.05);
+          if (e.special === 'cross') zipper(7, 0.2, 0, 0, 0.85, 0.7, 0.02);
+        }
+        break;
+      }
+      case 'combo':
+        play('heavy', { rate: 0.68, gain: 1 });
+        play('heavy', { at: 0.07, rate: 0.9, gain: 0.8 });
+        play('shatter', { at: 0.03, rate: 0.85, gain: 0.8 });
+        zipper(9, 0.3, -1, 1, 1, 0.7, 0.05);
+        zipper(9, 0.3, 1, -1, 1.15, 0.6, 0.12);
+        play('crumble', { at: 0.3, gain: 0.8 });
+        bells([0, 2, 4, 5], 0.06, 1, 0.22);
+        break;
+      case 'snowblast':
+        play('shatter', { rate: 1.1, gain: 0.9 });
+        for (let i = 0; i < 14; i++) play(pick(ALL_MATS), { at: 0.04 + i * 0.035, pan: rand(-0.9, 0.9), rate: rand(0.9, 1.4), gain: 0.6 });
+        bells([0, 1, 2, 3, 4, 5], 0.07, 1, 0.2);
+        break;
+      case 'meowrush':
+        play('whoosh', { gain: 0.8, rate: 1.1 });
+        zipper(14, 0.55, -1, 1, 1.1, 0.7, 0.12);
+        play('heavy', { at: 0.2, gain: 0.5 });
+        break;
+      case 'bunnydrop':
+        play('whoosh', { gain: 0.8, rate: 0.9 });
+        play('heavy', { at: 0.34, rate: 0.75, gain: 1, pan: panOf(e.c) });
+        play('crumble', { at: 0.38, gain: 0.8, pan: panOf(e.c) });
+        play('shatter', { at: 0.36, gain: 0.5 });
+        break;
+      case 'douse':
+        play('hiss', { rate: rand(0.9, 1.15), pan: panOf(e.c), gain: 0.6 });
+        play('snap', { rate: rand(1.1, 1.3), pan: panOf(e.c), gain: 0.5 });
+        break;
+      case 'icebreak':
+        play('shatter', { rate: rand(0.95, 1.25), pan: panOf(e.c), gain: 0.75 });
+        break;
+      case 'frozenblock':
+        play('thud', { rate: 1.6, pan: panOf(e.c), gain: 0.7 });
+        break;
+      case 'stage':
+        bells([0, 2, 4], 0.08, 1, 0.3);
+        play('crunch', { rate: 0.9, gain: 0.6 });
+        break;
+      case 'fever':
+        bells([0, 1, 2, 3, 4, 5, 7], 0.045, 1, 0.24);
+        play('shatter', { rate: 0.8, gain: 0.7 });
+        break;
+      case 'feverend':
+        bells([4, 2], 0.09, 0.5, 0.2);
+        break;
+      case 'meltdown':
+        play('rumble', { gain: 1 });
+        play('hiss', { rate: 0.55, gain: 0.8 });
+        break;
+      case 'snowfall':
+        bells([0, 2, 4, 5, 7, 9], 0.12, 1, 0.28);
+        break;
+      case 'shuffle':
+        for (let i = 0; i < 10; i++) play('tick', { at: i * 0.04, rate: rand(0.8, 1.4), pan: rand(-0.8, 0.8), gain: 0.5 });
+        break;
+      case 'newbest':
+        bells([0, 2, 4, 7], 0.07, 1, 0.26);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+// 비니를 옮길 때 — 맞춰지지 않아 되돌아오면 둔탁하게
+function swap(g) {
+  if (!on || !bank) return;
+  play('tick', { rate: rand(0.9, 1.15), gain: 0.55 });
+  if (g && g.phase === 'back') play('thud', { at: CFG.SWAP_TIME, rate: rand(0.9, 1.05), gain: 0.55 });
+}
+
+// 브라우저는 사용자가 누른 순간에만 소리를 켜 준다 — 시작 버튼에서 부른다
+function unlock() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!ctx) {
+    ctx = new AC();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14;
+    comp.knee.value = 8;
+    comp.ratio.value = 4;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.15;
+    master = ctx.createGain();
+    master.gain.value = 0.9;
+    master.connect(comp);
+    comp.connect(ctx.destination);
+    bank = bake();
+    // 앱을 내리면 쉬게 한다
+    document.addEventListener('visibilitychange', () => {
+      if (!ctx) return;
+      if (document.hidden) ctx.suspend();
+      else if (on) ctx.resume();
+    });
+  }
+  if (ctx.state !== 'running') ctx.resume();
+}
+
+function isOn() { return on; }
+function setOn(v) {
+  on = !!v;
+  try { localStorage.setItem('frostlink_sound', on ? 'on' : 'off'); } catch { /* 무시 */ }
+  if (ctx) { if (on) ctx.resume(); else ctx.suspend(); }
+}
+
+// 검증용 — 몇 개가 구워졌고 지금 몇 개가 울리는지
+function stats() {
+  return { ready: !!bank, on, state: ctx ? ctx.state : 'none', voices, tally: { ...tally },
+           buffers: bank ? Object.values(bank).reduce((s, a) => s + a.length, 0) : 0 };
+}
+
+// 미리듣기 도구(tools/sfx_preview.py)가 구운 소리를 꺼내 WAV 로 저장할 때 쓴다
+function dump() {
+  if (!bank) return null;
+  const out = {};
+  for (const [k, list] of Object.entries(bank)) out[k] = list.map((b) => Array.from(b.getChannelData(0)));
+  return { sr: ctx.sampleRate, bank: out };
+}
+
+  Object.assign(__exports, { dump, isOn, onEvents, setOn, stats, swap, unlock });
+
+  };
   __defs['main.js'] = function (__exports, __req) {
 const { CFG, todaySeed } = __req('config.js');
 const { createGame, update, trySwap, selectable, teamOf } = __req('game.js');
 const { swapMakesMatch } = __req('board.js');
 const { createView, assetList } = __req('view.js');
+const sfx = __req('sfx.js');
 const canvas = document.getElementById('stage');
 const ui = document.getElementById('ui');
 const hud = ui.querySelector('#hud');
@@ -1996,6 +2429,7 @@ async function boot() {
   try { best = Number(localStorage.getItem('frostlink_best') || 0) || 0; } catch { best = 0; }
 
   function start() {
+    sfx.unlock();
     // 오늘의 판 — 그날은 전 세계가 같은 판을 푼다 (경품이 걸리면 공정해야 한다)
     g = createGame(todaySeed());
     sel = null;
@@ -2058,7 +2492,7 @@ async function boot() {
 
   // 판이 연출 중이면 담아 뒀다가 풀리는 즉시 둔다. 손가락이 씹히면 그때부터 재미가 없다.
   function request(a, b) {
-    if (selectable(g)) trySwap(g, a, b);
+    if (selectable(g)) { if (trySwap(g, a, b)) sfx.swap(g); }
     else queued = [a, b];
   }
 
@@ -2086,6 +2520,13 @@ async function boot() {
   document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
   document.addEventListener('gesturestart', (e) => e.preventDefault());
 
+  // 소리 켜기/끄기 — 판 도중에도 누를 수 있게 늘 떠 있다
+  const elSound = ui.querySelector('[data-sound]');
+  const paintSound = () => { elSound.textContent = sfx.isOn() ? 'SOUND ON' : 'SOUND OFF';
+                             elSound.classList.toggle('off', !sfx.isOn()); };
+  paintSound();
+  elSound.addEventListener('click', () => { sfx.unlock(); sfx.setOn(!sfx.isOn()); paintSound(); });
+
   ui.querySelector('[data-start]').addEventListener('click', start);
   ui.querySelector('[data-again]').addEventListener('click', start);
 
@@ -2095,14 +2536,15 @@ async function boot() {
     last = now;
     if (phase === 'play') {
       if (queued && selectable(g)) {
-        trySwap(g, queued[0], queued[1]);
+        if (trySwap(g, queued[0], queued[1])) sfx.swap(g);
         queued = null;
       }
       update(g, dt);
-      if (g.events.length) view.onEvents(g.events);
+      if (g.events.length) { view.onEvents(g.events); sfx.onEvents(g.events); }
       if (!beaten && best > 0 && g.score > best) {
         beaten = true;
         view.onEvents([{ kind: 'newbest' }]);
+        sfx.onEvents([{ kind: 'newbest' }]);
       }
       const s = Math.ceil(g.left);
       elTime.textContent = s;
@@ -2127,7 +2569,7 @@ async function boot() {
   }
 
   window.__match = {
-    game: () => g, phase: () => phase, start, view, cfg: CFG,
+    game: () => g, phase: () => phase, start, view, cfg: CFG, sfx,
     swapAt: (a, b) => trySwap(g, a, b),
     findMove: () => {
       for (let r = 0; r < CFG.ROWS; r++) {
